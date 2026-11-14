@@ -258,6 +258,7 @@ function createControlWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false, // keeps the bridge identical to the main window
     },
   });
   win.loadFile(path.join(__dirname, 'renderer', 'control.html')).catch((err) => {
@@ -698,7 +699,15 @@ async function runE2ERecording(win) {
       if (toastText && /失败|不可用/.test(toastText)) { step('record-error', false, toastText); break; }
     }
     if (!pillState) pillState = { pill: false };
-    step('control-pill-loaded', !!(pillState.pill && /control\.html$/.test(pillState.url || '')), JSON.stringify(pillState));
+    const bridgeOk = pillState.pill
+      ? await (async () => {
+          try {
+            return await controlWindow.webContents.executeJavaScript(`!!window.focusee && !!window.focusee.control`, true);
+          } catch { return false; }
+        })()
+      : false;
+    step('control-pill-loaded', !!(pillState.pill && /control\.html$/.test(pillState.url || '') && bridgeOk), JSON.stringify({ ...pillState, bridgeOk }));
+    step('pill-bridge-alive', bridgeOk === true);
     const mainHidden = mainWindow ? !mainWindow.isVisible() : true;
     step('main-window-hidden-while-recording', mainHidden);
     await wait(2500);

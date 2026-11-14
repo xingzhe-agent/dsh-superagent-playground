@@ -1,13 +1,19 @@
 'use strict';
 
 const { contextBridge, ipcRenderer } = require('electron');
-const nodePath = require('node:path');
-const nodeFs = require('node:fs');
-
-// Scoped Node require for the vendored segmentation model (sandbox: false).
-// Exposed as a single bridge call surface, not a generic require.
-const childRequire = typeof require === 'function' ? require : null;
-const VENDOR_DIR = nodePath.join(__dirname, 'renderer', 'vendor');
+// Node modules are only available when the window is NOT sandboxed. The main
+// editor window sets sandbox:false; other windows (the control pill) stay
+// sandboxed, where require('node:*') throws — so guard, or this preload dies
+// and the pill loses its whole bridge (buttons dead, timer frozen).
+let nodePath = null;
+let nodeFs = null;
+let childRequire = null;
+try {
+  nodePath = require('node:path');
+  nodeFs = require('node:fs');
+  childRequire = require;
+} catch {}
+const VENDOR_DIR = nodePath ? nodePath.join(__dirname, 'renderer', 'vendor') : '';
 const SEG = { segmenter: null, ts: 0 };
 
 function blobUrlOf(file) {
