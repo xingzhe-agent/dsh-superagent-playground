@@ -880,7 +880,10 @@ function bindRecordDialog() {
   $('#modal-record').addEventListener('click', (e) => {
     if (e.target.id === 'modal-record') closeModal('modal-record');
   });
-  window.focusee.capture.onStopRequested((payload) => finishRecording(payload?.mode || 'save'));
+  window.focusee.capture.onStopRequested((payload) => {
+    window.__stopPhase = 'finishRecording called (mode=' + (payload?.mode || 'save') + ')';
+    finishRecording(payload?.mode || 'save');
+  });
   ipcRendererOn('record:pipMoved', (p) => {
     if (S.pipLive) { S.pipLive.nx = p.nx; S.pipLive.ny = p.ny; }
   });
@@ -968,15 +971,31 @@ async function startRecording() {
     // No maxWidth/maxHeight caps: Chromium turns them into a crop-and-scale
     // request (16:9 on a 16:10 display) and the source start frequently times
     // out on macOS. Native size keeps the frame intact and starts reliably.
+    // Legacy chromeMediaSourceId path: requires real user activation (a
+    // synthetic click lacks it), but it is the only path that works reliably
+    // for real person clicks on macOS — proven across many recordings.
     let videoStream = null;
     let lastErr = null;
-    for (let attempt = 1; attempt <= 3 && !videoStream; attempt += 1) {
+    // The desktop source id can go stale (Chromium rotates them); on retries
+    // re-fetch the source list and re-resolve the same display/window.
+    for (let attempt = 1; attempt <= 5 && !videoStream; attempt += 1) {
       try {
+        let sourceId = source.id;
+        if (attempt > 1) {
+          await new Promise((r) => setTimeout(r, attempt === 2 ? 800 : 1500));
+          try {
+            const fresh = await window.focusee.capture.sources();
+            const match = fresh.find((f) => f.id === source.id) ||
+              fresh.find((f) => f.kind === source.kind && f.name === source.name) ||
+              (source.kind === 'screen' ? fresh.find((f) => f.kind === 'screen') : null);
+            if (match) sourceId = match.id;
+          } catch {}
+        }
         videoStream = await withTimeout(
           navigator.mediaDevices.getUserMedia({
             audio: false,
             video: {
-              mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: source.id },
+              mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId },
             },
           }),
           15000,
@@ -985,7 +1004,7 @@ async function startRecording() {
       } catch (err) {
         lastErr = err;
         console.warn('[record] getUserMedia attempt', attempt, 'failed:', err.message);
-        await new Promise((r) => setTimeout(r, 400 * attempt));
+        if (attempt < 5) await new Promise((r) => setTimeout(r, 500 * attempt));
       }
     }
     if (!videoStream) throw lastErr || new Error('无法启动屏幕捕获');
@@ -1058,6 +1077,9 @@ async function startRecording() {
       camVideoEl.playsInline = true;
       await camVideoEl.play().catch(() => {});
       window.__bakeDebug = { draws: 0, camReady: 0, camW: 0, screenReady: 0, pipDrawn: 0 };
+      // setInterval, not rAF: the main window is hidden during recording and
+      // Chromium throttles rAF to ~1fps for occluded windows — which stalled
+      // the captureStream and made MediaRecorder die mid-take.
       const drawBakedFrame = () => {
         try {
           window.__bakeDebug.screenReady = Math.max(window.__bakeDebug.screenReady, screenVideoEl.readyState);
@@ -1094,9 +1116,9 @@ async function startRecording() {
             }
           }
         } catch {}
-        bakeRaf = requestAnimationFrame(drawBakedFrame);
       };
       drawBakedFrame();
+      bakeRaf = setInterval(drawBakedFrame, 1000 / 30);
       recordSource = bakeCanvas.captureStream(30);
       if (micStream) for (const t of micStream.getAudioTracks()) recordSource.addTrack(t);
     }
@@ -1167,17 +1189,34 @@ async function finishRecording(mode = 'save') {
   const cancelled = mode === 'cancel';
   S.recording = null;
   clearInterval(rec.timer);
+  window.__stopPhase = 'teardown-start';
+  // Unblock the person FIRST: hide the pill (bounded — a hung pill page must
+  // never keep the editor hostage) and bring the editor back. Saving then
+  // continues in the background and reports via toast.
   try {
-    if (rec.recorder.state !== 'inactive') rec.recorder.stop();
-    if (rec.bakeRaf) cancelAnimationFrame(rec.bakeRaf);
-    if (rec.camRecorder && rec.camRecorder.state !== 'inactive') rec.camRecorder.stop();
-    rec.stream.getTracks().forEach((t) => t.stop());
-    rec.videoStream?.getTracks().forEach((t) => t.stop());
-    rec.micStream?.getTracks().forEach((t) => t.stop());
-    rec.camStream?.getTracks().forEach((t) => t.stop());
-    await window.focusee.capture.hideControl();
+    // Always attempt stop: if the source stalled, the recorder may already be
+    // 'inactive' (its error event kills it) — stop() on that throws, which is
+    // fine; the save below runs either way.
+    try { if (rec.recorder.state !== 'inactive') rec.recorder.stop(); } catch (e1) { console.warn('[record] stop:', e1.message); }
+    try { if (rec.camRecorder && rec.camRecorder.state !== 'inactive') rec.camRecorder.stop(); } catch (e2) { console.warn('[record] cam stop:', e2.message); }
+    if (rec.bakeRaf) clearInterval(rec.bakeRaf);
+    // Tracks stop once the recorder has flushed its final chunk.
+    setTimeout(() => {
+      try {
+        rec.stream?.getTracks().forEach((t) => t.stop());
+        rec.videoStream?.getTracks().forEach((t) => t.stop());
+        rec.micStream?.getTracks().forEach((t) => t.stop());
+        rec.camStream?.getTracks().forEach((t) => t.stop());
+      } catch {}
+    }, 900);
+    await Promise.race([
+      window.focusee.capture.hideControl(),
+      new Promise((r) => setTimeout(r, 3000)),
+    ]);
+    if (mainWindow && !mainWindow.isVisible()) mainWindow.show();
   } catch (err) {
-    console.error(err);
+    console.error('[record] teardown error', err);
+    if (mainWindow && !mainWindow.isVisible()) mainWindow.show();
   }
   if (cancelled) {
     // Discard: drop the chunks without going through saveRecording.
@@ -1186,14 +1225,20 @@ async function finishRecording(mode = 'save') {
     toast('录制已取消，未保存');
     return;
   }
-  // saveRecording reads S.recording; hand the recorder's chunks over directly.
-  await saveRecordingFrom(rec);
+  // Save continues in the background — the editor is already back in front.
+  window.__stopPhase = 'save-started';
+  saveRecordingFrom(rec).catch((err) => {
+    console.error('[record] save failed', err);
+    window.__saveState = 'failed: ' + err.message;
+    toast(`保存失败：${err.message}。录制数据未丢失，可重试导出。`);
+  });
 }
 
 async function saveRecordingFrom(rec) {
   if (!rec || rec.saved) return;
   rec.saved = true;
   rec.recorder.onstop = null;
+  window.__saveState = 'saving';
   const blob = new Blob(rec.chunks, { type: rec.recorder.mimeType || 'video/webm' });
   const data = new Uint8Array(await blob.arrayBuffer());
   const rawCursor = await window.focusee.capture.end();
@@ -1254,6 +1299,7 @@ async function saveRecordingFrom(rec) {
     await window.focusee.projects.save(stripRuntime(S.project));
     renderTimeline();
   }
+  window.__saveState = 'done';
   toast(`录制完成：${cursor.length} 个光标采样点`);
 }
 

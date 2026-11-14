@@ -60,6 +60,7 @@ contextBridge.exposeInMainWorld('focusee', {
   capture: {
     sources: () => ipcRenderer.invoke('capture:sources'),
     begin: () => ipcRenderer.invoke('capture:begin'),
+    setDisplaySource: (id) => ipcRenderer.send('capture:setDisplaySource', id),
     end: () => ipcRenderer.invoke('capture:end'),
     showControl: (info) => ipcRenderer.invoke('capture:showControl', info),
     updateControl: (info) => ipcRenderer.invoke('capture:updateControl', info),

@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, desktopCapturer, screen, dialog, protocol, net, shell, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, screen, dialog, protocol, net, shell, systemPreferences, session } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -219,6 +219,10 @@ function createMainWindow() {
       nodeIntegration: false,
       sandbox: false, // preload needs require() for the vendored segmentation model
       spellcheck: false,
+      // The editor is hidden while recording, but the bake loop (camera PiP
+      // compositing) must keep running at full rate — otherwise the baked
+      // recording becomes a ~1fps slideshow.
+      backgroundThrottling: false,
     },
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
@@ -253,16 +257,22 @@ function createMainWindow() {
 async function stopPillCameraPreview() {
   if (!controlWindow || controlWindow.isDestroyed()) return;
   try {
-    await controlWindow.webContents.executeJavaScript(`
-      (() => {
-        const v = document.getElementById('cam-video');
-        if (v && v.srcObject) {
-          v.srcObject.getTracks().forEach((t) => t.stop());
-          v.srcObject = null;
-        }
-        return true;
-      })()
-    `);
+    // Bounded: a busy pill page must never block the recorder's teardown
+    // (an unbounded await here hung the whole save once).
+    await Promise.race([
+      controlWindow.webContents.executeJavaScript(`
+        (() => {
+          const v = document.getElementById('cam-video');
+          if (v && v.srcObject) {
+            v.srcObject.getTracks().forEach((t) => t.stop());
+            v.srcObject = null;
+          }
+          return true;
+        })()
+      `,
+      3000,
+    ),
+    ]);
   } catch (err) {
     console.warn('[control] preview stop failed:', err.message);
   }
@@ -481,6 +491,26 @@ function registerIpc() {
   });
 
   // Recording -------------------------------------------------------------
+  // Modern desktop-capture path: the renderer calls getDisplayMedia and this
+  // handler supplies the source the person picked in our own picker. This
+  // avoids the legacy chromeMediaSourceId getUserMedia path, whose source
+  // start intermittently times out on macOS ("Timeout starting video source").
+  let pendingDisplaySource = null;
+  ipcMain.on('capture:setDisplaySource', (_e, sourceId) => {
+    pendingDisplaySource = sourceId || null;
+  });
+  session.defaultSession.setDisplayMediaRequestHandler(async (_req, opts) => {
+    try {
+      const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 1, height: 1 } });
+      const picked = pendingDisplaySource
+        ? sources.find((s) => s.id === pendingDisplaySource) || sources[0]
+        : sources[0];
+      if (picked) opts.video = picked;
+    } catch (err) {
+      console.error('[capture] display handler failed:', err.message);
+    }
+  }, { useSystemPicker: false });
+
   ipcMain.handle('capture:sources', async () => {
     const fetch = () => desktopCapturer.getSources({
       types: ['screen', 'window'],
@@ -850,9 +880,21 @@ async function runE2ERecording(win) {
     });
     step('pill-stop-clicked', stopped === 'clicked', stopped);
     if (bakeDebug) step('bake-debug', true, JSON.stringify(bakeDebug));
-    await wait(3500);
-    const projects = await listProjects();
-    const rec = projects.find((p) => p.id !== 'sample');
+    // The save runs in the background after the editor is unblocked — poll.
+    let rec = null;
+    let saveState = null;
+    for (let i = 0; i < 25 && !rec; i += 1) {
+      await wait(1000);
+      const projects = await listProjects();
+      rec = projects.find((p) => p.id !== 'sample') || null;
+      try {
+        saveState = await evalJs(`window.__saveState || null`);
+        const phase = await evalJs(`window.__stopPhase || null`);
+        if (phase) report.stopPhase = phase;
+        if (saveState && saveState.startsWith('failed')) break;
+      } catch {}
+    }
+    step('save-state', true, saveState || 'unknown');
     step('project-saved', !!rec, rec ? `${rec.name} dur=${rec.duration?.toFixed?.(2)}` : 'none');
     report.project = rec || null;
     await wait(400);
