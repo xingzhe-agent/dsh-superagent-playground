@@ -12,3 +12,5 @@
   4. 官方自述 recall 低于通用 agent（precision 优先），不能当穷尽式审查用。
 - **本 work/ 目录与其他工单共享**（playground 仓库按工单分支共存）：本工单文件一律带 `open-code-review-186dba00d66a` 后缀，勿动他单文件。
 - 复盘详情：[work/项目复盘-open-code-review-186dba00d66a.md](work/项目复盘-open-code-review-186dba00d66a.md)。
+- **落地机制（2026-11-15 定）**：使用机制=技能自动发现+固化配置（已落）；全局规则 `~/.dsh/AGENTS.md` §十七
+  （ocr 指针 + 可选初筛定位）；**不做 hook 级强制**——若后续真实使用证明值得默认化再升级。
