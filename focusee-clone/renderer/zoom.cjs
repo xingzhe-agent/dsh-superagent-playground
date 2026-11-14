@@ -361,6 +361,23 @@ function activeCameraSettings(camera, time) {
   };
 }
 
+/**
+ * PiP rectangle for live (baked-into-recording) camera compositing: anchored
+ * at a free normalized centre point, circle diameter = sizePct of canvas width.
+ *
+ * @returns {{x:number,y:number,w:number,h:number}}
+ */
+function pipRectAt(canvasW, canvasH, nx, ny, sizePct, camAspect = 4 / 3) {
+  const W = Math.max(1, canvasW);
+  const H = Math.max(1, canvasH);
+  const d = clamp((W * clamp(Number(sizePct) || 18, 6, 40)) / 100, 24, W * 0.45);
+  const w = d;
+  const h = d / clamp(Number(camAspect) || 4 / 3, 0.5, 3);
+  const x = clamp(nx * W - w / 2, 4, W - w - 4);
+  const y = clamp(ny * H - h / 2, 4, H - h - 4);
+  return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+}
+
 module.exports = {
   clamp,
   lerp,
@@ -380,4 +397,5 @@ module.exports = {
   computeCameraRect,
   tiltSlices,
   activeCameraSettings,
+  pipRectAt,
 };

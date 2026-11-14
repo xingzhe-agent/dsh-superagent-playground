@@ -2,16 +2,28 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'self';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'self'; media-src 'self' blob:;" />
   <title>录制控制</title>
   <style>
     * { box-sizing: border-box; }
     html, body { background: transparent; overflow: hidden; }
     body {
-      margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
+      margin: 0; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
       font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
       -webkit-app-region: drag; user-select: none;
     }
+    .cam-panel {
+      position: relative; -webkit-app-region: no-drag;
+      border-radius: 12px; overflow: hidden;
+      box-shadow: 0 8px 30px rgba(0,0,0,.4);
+    }
+    .cam-panel video { display: block; width: 240px; }
+    .cam-tools {
+      position: absolute; left: 0; right: 0; bottom: 0;
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      background: rgba(17,19,24,.72); color: #fff; padding: 4px 0; font-size: 11px;
+    }
+    .cam-tools button { border: 0; border-radius: 6px; width: 24px; height: 20px; background: rgba(255,255,255,.18); color: #fff; cursor: pointer; }
     .pill {
       display: flex; align-items: center; gap: 10px;
       background: rgba(17, 19, 24, 0.94);
@@ -41,6 +53,14 @@
   </style>
 </head>
 <body>
+  <div id="cam-panel" class="cam-panel hidden" title="拖动窗口移动画中画位置；＋/− 调大小">
+    <video id="cam-video" autoplay muted playsinline></video>
+    <div class="cam-tools">
+      <button id="cam-smaller">−</button>
+      <span id="cam-size-label">18%</span>
+      <button id="cam-bigger">＋</button>
+    </div>
+  </div>
   <div class="pill">
     <span class="dot" id="dot"></span>
     <span class="time" id="time">00:00</span>

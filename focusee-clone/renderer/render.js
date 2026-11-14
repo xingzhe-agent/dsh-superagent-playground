@@ -277,8 +277,11 @@ export function drawFrame(ctx, { width, height, project, video, time, preview = 
   }
 
   // Camera picture-in-picture (FocuSee's 摄像头画中画 / 镜头布局 / 布局片段).
-  const camBase = project.camera || {};
+  const camBase = { ...(project.camera || {}) };
   const camVideo = project.cameraVideoEl || null;
+  // camera.baked = the take already has the PiP composited in; skip drawing it
+  // again unless the person explicitly re-overlays (forceOverlay).
+  if (camBase.baked && !camBase.forceOverlay) camBase.enabled = false;
   const camActive = activeCameraSettings(camBase, time);
   const camReady = camBase.enabled && camVideo && camVideo.videoWidth > 0;
   if (camReady) {

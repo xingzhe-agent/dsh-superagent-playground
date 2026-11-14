@@ -510,7 +510,7 @@ function inspectorLayout(p) {
     <div class="insp-section">
       <div class="switch-row"><span>摄像头画中画</span><button class="switch ${cam.enabled ? 'on' : ''}" data-toggle="camera.enabled" ${hasTake ? '' : 'disabled'}></button></div>
       ${hasTake
-        ? `<p class="hint">使用录制时勾选「录制摄像头」保存的摄像头画面（camera.webm）。</p>`
+        ? `${cam.baked ? `<div class="switch-row"><span>编辑时再叠加一次摄像头</span><button class="switch ${cam.forceOverlay ? 'on' : ''}" data-toggle="camera.forceOverlay"></button></div><p class="hint">录制时已把画中画合成进画面；默认不再叠加。需要调整时打开此开关（用 camera.webm 重新叠加）。</p>` : `<p class="hint">使用录制时勾选「录制摄像头」保存的摄像头画面（camera.webm）。</p>`}`
         : `<p class="hint">这个项目没有摄像头画面。录制时勾选「录制摄像头（画中画）」即可生成。</p>`}
       <h4>镜头布局</h4>
       <div class="chip-row">${chips}</div>
@@ -604,6 +604,7 @@ function bindInspector(host) {
     else if (el.dataset.toggle === 'cursorFx.highlight') p.cursorFx.highlight = !p.cursorFx.highlight;
     else if (el.dataset.toggle === 'fixedZoom') p.fixedZoom = !p.fixedZoom;
     else if (el.dataset.toggle === 'camera.enabled') p.camera.enabled = !p.camera.enabled;
+    else if (el.dataset.toggle === 'camera.forceOverlay') p.camera.forceOverlay = !p.camera.forceOverlay;
     else if (el.dataset.toggle === 'style.tiltFollow') p.style.tiltFollow = !p.style.tiltFollow;
     renderInspector();
     S.dirty = true;
@@ -859,6 +860,12 @@ function tick(ts) {
 
 /** Reject if the promise takes longer than ms — getUserMedia can hang forever
  *  on an unanswered permission dialog, which would freeze the whole flow. */
+function ipcRendererOn(channel, cb) {
+  // The preload bridge doesn't expose raw ipcRenderer; register via the
+  // control-state channel pattern instead — use a tiny dedicated listener.
+  return window.focusee.pipEvents.on(channel, cb);
+}
+
 function withTimeout(promise, ms, label) {
   return Promise.race([
     promise,
@@ -873,6 +880,14 @@ function bindRecordDialog() {
     if (e.target.id === 'modal-record') closeModal('modal-record');
   });
   window.focusee.capture.onStopRequested((payload) => finishRecording(payload?.mode || 'save'));
+  ipcRendererOn('record:pipMoved', (p) => {
+    if (S.pipLive) { S.pipLive.nx = p.nx; S.pipLive.ny = p.ny; }
+  });
+  ipcRendererOn('record:pipResize', (p) => {
+    if (!S.pipLive) return;
+    S.pipLive.size = Math.min(40, Math.max(6, (S.pipLive.size || 18) + p.delta));
+    window.focusee.capture.updateControl({ pipSize: S.pipLive.size });
+  });
 }
 
 async function openRecordDialog() {
@@ -973,7 +988,8 @@ async function startRecording() {
       }
     }
     let camStream = null;
-    const withCamera = $('#opt-camera')?.checked;
+    S.pipLive = { nx: 0.82, ny: 0.82, size: 18 };
+    const withCamera = $('#opt-camera')?.checked || S.info?.forceBake;
     if (withCamera) {
       try {
         camStream = await withTimeout(
@@ -998,7 +1014,66 @@ async function startRecording() {
     ];
     const stream = new MediaStream(tracks);
     const mimeType = pickMime();
-    const recorder = new MediaRecorder(stream, {
+    let recordSource = stream;
+    let bakeCanvas = null;
+    let bakeRaf = null;
+    let baked = false;
+    if (camStream) {
+      baked = true;
+      // Bake the camera PiP into the recording in real time: composite the
+      // screen capture + camera onto an offscreen canvas at the screen's own
+      // resolution, and record THAT — FocuSee-style, PiP visible in the take.
+      const settings = videoStream.getVideoTracks()[0]?.getSettings?.() || {};
+      const bw = settings.width || display.width;
+      const bh = settings.height || display.height;
+      bakeCanvas = document.createElement('canvas');
+      bakeCanvas.width = bw;
+      bakeCanvas.height = bh;
+      const bctx = bakeCanvas.getContext('2d');
+      const screenVideoEl = document.createElement('video');
+      screenVideoEl.srcObject = videoStream;
+      screenVideoEl.muted = true;
+      screenVideoEl.playsInline = true;
+      await screenVideoEl.play().catch(() => {});
+      const camVideoEl = document.createElement('video');
+      camVideoEl.srcObject = camStream;
+      camVideoEl.muted = true;
+      camVideoEl.playsInline = true;
+      await camVideoEl.play().catch(() => {});
+      const drawBakedFrame = () => {
+        try {
+          if (screenVideoEl.readyState >= 2) {
+            bctx.drawImage(screenVideoEl, 0, 0, bw, bh);
+            const cv = S.recording?.camStream ? camVideoEl : null;
+            if (cv && cv.videoWidth > 0) {
+              const pip = pipRectAt(bw, bh, S.pipLive.nx, S.pipLive.ny, S.pipLive.size, cv.videoWidth / cv.videoHeight);
+              const d = pip.w;
+              const cx = pip.x + pip.w / 2;
+              const cy = pip.y + pip.h / 2;
+              bctx.save();
+              bctx.beginPath();
+              bctx.arc(cx, cy, d / 2, 0, Math.PI * 2);
+              bctx.clip();
+              const cw = Math.min(cv.videoWidth, cv.videoHeight);
+              bctx.drawImage(cv, (cv.videoWidth - cw) / 2, (cv.videoHeight - cw) / 2, cw, cw, pip.x, pip.y, pip.w, pip.h);
+              bctx.restore();
+              bctx.save();
+              bctx.strokeStyle = 'rgba(255,255,255,0.7)';
+              bctx.lineWidth = Math.max(2, d * 0.02);
+              bctx.beginPath();
+              bctx.arc(cx, cy, d / 2 - bctx.lineWidth / 2, 0, Math.PI * 2);
+              bctx.stroke();
+              bctx.restore();
+            }
+          }
+        } catch {}
+        bakeRaf = requestAnimationFrame(drawBakedFrame);
+      };
+      drawBakedFrame();
+      recordSource = bakeCanvas.captureStream(30);
+      if (micStream) for (const t of micStream.getAudioTracks()) recordSource.addTrack(t);
+    }
+    const recorder = new MediaRecorder(recordSource, {
       ...(mimeType ? { mimeType } : {}),
       videoBitsPerSecond: 8_000_000,
     });
@@ -1014,6 +1089,8 @@ async function startRecording() {
       recorder,
       chunks,
       camChunks: camStream ? [] : null,
+      baked,
+      pip: { ...S.pipLive },
       mic,
       source,
       display,
@@ -1033,7 +1110,15 @@ async function startRecording() {
       toast(`保存录制失败：${err.message}`);
     });
     recorder.start(1000);
-    await window.focusee.capture.showControl({ startedAt: S.recording.startedAt, mic });
+    await window.focusee.capture.showControl({
+      startedAt: S.recording.startedAt,
+      mic,
+      withCamera: !!camStream,
+      pipSize: S.recording.pip.size,
+    });
+    if (camStream) {
+      await window.focusee.control.attachCameraPreview();
+    }
     // Hide the editor while the control pill is up; the pill itself is excluded
     // from capture via content protection.
     const timer = setInterval(() => {
@@ -1057,6 +1142,7 @@ async function finishRecording(mode = 'save') {
   clearInterval(rec.timer);
   try {
     if (rec.recorder.state !== 'inactive') rec.recorder.stop();
+    if (rec.bakeRaf) cancelAnimationFrame(rec.bakeRaf);
     if (rec.camRecorder && rec.camRecorder.state !== 'inactive') rec.camRecorder.stop();
     rec.stream.getTracks().forEach((t) => t.stop());
     rec.videoStream?.getTracks().forEach((t) => t.stop());
@@ -1123,7 +1209,12 @@ async function saveRecordingFrom(rec) {
   await openProject(saved.id);
   if (camSaved && S.project) {
     S.project.cameraFile = 'camera.webm';
-    S.project.camera = { enabled: true, layout: 'bottom-right', size: 18 };
+    S.project.camera = {
+      enabled: true, layout: 'bottom-right', size: 18,
+      baked: rec.baked === true, // recording already contains the PiP
+      nx: rec.pip?.nx, ny: rec.pip?.ny,
+      forceOverlay: false,
+    };
     await window.focusee.projects.save(stripRuntime(S.project));
   }
   // Duration comes from the decoded video; persist it for the project list.

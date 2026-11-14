@@ -81,6 +81,9 @@ contextBridge.exposeInMainWorld('focusee', {
     },
     stop: () => ipcRenderer.send('capture:stopRequested'),
     cancel: () => ipcRenderer.send('capture:cancelRequested'),
+    reportPip: () => ipcRenderer.send('control:pipReport'),
+    pipResize: (delta) => ipcRenderer.send('control:pipResize', delta),
+    attachCameraPreview: () => ipcRenderer.invoke('control:attachCameraPreview'),
   },
 
   exporter: {
@@ -119,6 +122,16 @@ contextBridge.exposeInMainWorld('focusee', {
       const out = { ok: true, bytes, w: mask.width, h: mask.height };
       try { res.close(); } catch {}
       return out;
+    },
+  },
+
+  pipEvents: {
+    on: (channel, cb) => {
+      const handler = (_e, payload) => cb(payload);
+      const allowed = ['record:pipMoved', 'record:pipResize'];
+      if (!allowed.includes(channel)) return () => {};
+      ipcRenderer.on(channel, handler);
+      return () => ipcRenderer.removeListener(channel, handler);
     },
   },
 

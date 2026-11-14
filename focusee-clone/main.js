@@ -12,6 +12,7 @@ const { pathToFileURL } = require('node:url');
 // Paths
 // ---------------------------------------------------------------------------
 
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const isE2E = process.argv.includes('--e2e');
 const isE2E_REC = process.argv.includes('--e2e-rec');
 const isSmoke = process.argv.includes('--smoke');
@@ -251,7 +252,7 @@ function createControlWindow() {
   const win = new BrowserWindow({
     width: 320,
     height: 76,
-    resizable: false,
+    resizable: true,
     frame: false,
     alwaysOnTop: true,
     skipTaskbar: true,
@@ -277,6 +278,20 @@ function createControlWindow() {
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // The recording pill must not end up inside the recording itself.
   win.setContentProtection(true);
+  // Window position = where the baked-in camera PiP sits in the recording.
+  const reportMove = () => {
+    if (win.isDestroyed() || !win.isVisible()) return;
+    const [x, y] = win.getPosition();
+    const [w, h] = win.getSize();
+    const display = screen.getPrimaryDisplay();
+    const nx = clamp((x + w / 2 - display.bounds.x) / display.bounds.width, 0, 1);
+    const ny = clamp((y + h / 2 - display.bounds.y) / display.bounds.height, 0, 1);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('record:pipMoved', { nx: Number(nx.toFixed(3)), ny: Number(ny.toFixed(3)) });
+    }
+  };
+  win.on('moved', reportMove);
+  win.on('resized', reportMove);
   const place = () => {
     const display = screen.getPrimaryDisplay().workArea;
     const [w] = win.getSize();
@@ -379,6 +394,7 @@ function createTeleprompterWindow() {
 function registerIpc() {
   ipcMain.handle('app:info', async () => ({
     version: app.getVersion(),
+    forceBake: process.argv.includes('--force-bake'),
     electron: process.versions.electron,
     chrome: process.versions.chrome,
     dataRoot: dataRoot(),
@@ -595,6 +611,49 @@ function registerIpc() {
     const file = path.join(projectDir(id), p.cameraFile);
     const data = await fsp.readFile(file);
     return { data, mime: 'video/webm', file: p.cameraFile };
+  });
+
+  ipcMain.on('control:pipResize', (_e, delta) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('record:pipResize', { delta: Number(delta) || 0 });
+    }
+  });
+  ipcMain.on('control:pipReport', () => {
+    if (!controlWindow || controlWindow.isDestroyed() || !controlWindow.isVisible()) return;
+    const [x, y] = controlWindow.getPosition();
+    const [w, h] = controlWindow.getSize();
+    const display = screen.getPrimaryDisplay();
+    const nx = clamp((x + w / 2 - display.bounds.x) / display.bounds.width, 0, 1);
+    const ny = clamp((y + h / 2 - display.bounds.y) / display.bounds.height, 0, 1);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('record:pipMoved', { nx: Number(nx.toFixed(3)), ny: Number(ny.toFixed(3)) });
+    }
+  });
+  ipcMain.handle('control:attachCameraPreview', async () => {
+    // The control window opens its own camera capture for the live preview;
+    // the recorder's camera take is independent (two captures of one camera
+    // are allowed by macOS).
+    try {
+      const win = controlWindow && !controlWindow.isDestroyed() ? controlWindow : null;
+      if (!win) return { ok: false };
+      await win.webContents.executeJavaScript(
+        `(async () => {
+          const v = document.getElementById('cam-video');
+          if (!v) return 'no-video-el';
+          if (v.srcObject) return 'already';
+          const s = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 } }, audio: false });
+          v.srcObject = s;
+          return 'attached';
+        })()`,
+      );
+      // Grow the pill window so the preview fits.
+      const [w, h] = win.getSize();
+      win.setMinimumSize(320, 76);
+      win.setSize(w, Math.max(h, 380), false);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
   });
 
   ipcMain.handle('settings:get', async () => readSettings());
