@@ -1061,7 +1061,7 @@ async function startRecording() {
         try {
           if (screenVideoEl.readyState >= 2) {
             bctx.drawImage(screenVideoEl, 0, 0, bw, bh);
-            const cv = S.recording?.camStream ? camVideoEl : null;
+            const cv = camStream ? camVideoEl : null;
             if (cv && cv.videoWidth > 0) {
               const pip = pipRectAt(bw, bh, S.pipLive.nx, S.pipLive.ny, S.pipLive.size, cv.videoWidth / cv.videoHeight);
               const d = pip.w;
