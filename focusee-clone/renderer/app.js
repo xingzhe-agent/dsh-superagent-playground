@@ -1,7 +1,7 @@
 'use strict';
 
 import {
-  ASPECTS, buildZooms, clamp, detectActions, formatTime, normaliseCursor, zoomAt,
+  ASPECTS, buildZooms, clamp, detectActions, formatTime, normaliseCursor, zoomAt, pipRectAt,
 } from './zoom.js';
 import {
   BACKGROUNDS, backgroundById, backgroundCss, drawFrame, loadVideoElement, outputSize,
@@ -1057,30 +1057,40 @@ async function startRecording() {
       camVideoEl.muted = true;
       camVideoEl.playsInline = true;
       await camVideoEl.play().catch(() => {});
+      window.__bakeDebug = { draws: 0, camReady: 0, camW: 0, screenReady: 0, pipDrawn: 0 };
       const drawBakedFrame = () => {
         try {
+          window.__bakeDebug.screenReady = Math.max(window.__bakeDebug.screenReady, screenVideoEl.readyState);
+          if (camVideoEl) window.__bakeDebug.camW = Math.max(window.__bakeDebug.camW, camVideoEl.videoWidth || 0);
+          window.__bakeDebug.camReady = Math.max(window.__bakeDebug.camReady, camVideoEl ? camVideoEl.readyState : -1);
           if (screenVideoEl.readyState >= 2) {
             bctx.drawImage(screenVideoEl, 0, 0, bw, bh);
+            window.__bakeDebug.draws += 1;
             const cv = camStream ? camVideoEl : null;
             if (cv && cv.videoWidth > 0) {
-              const pip = pipRectAt(bw, bh, S.pipLive.nx, S.pipLive.ny, S.pipLive.size, cv.videoWidth / cv.videoHeight);
-              const d = pip.w;
-              const cx = pip.x + pip.w / 2;
-              const cy = pip.y + pip.h / 2;
-              bctx.save();
-              bctx.beginPath();
-              bctx.arc(cx, cy, d / 2, 0, Math.PI * 2);
-              bctx.clip();
-              const cw = Math.min(cv.videoWidth, cv.videoHeight);
-              bctx.drawImage(cv, (cv.videoWidth - cw) / 2, (cv.videoHeight - cw) / 2, cw, cw, pip.x, pip.y, pip.w, pip.h);
-              bctx.restore();
-              bctx.save();
-              bctx.strokeStyle = 'rgba(255,255,255,0.7)';
-              bctx.lineWidth = Math.max(2, d * 0.02);
-              bctx.beginPath();
-              bctx.arc(cx, cy, d / 2 - bctx.lineWidth / 2, 0, Math.PI * 2);
-              bctx.stroke();
-              bctx.restore();
+              try {
+                const pip = pipRectAt(bw, bh, S.pipLive.nx, S.pipLive.ny, S.pipLive.size, cv.videoWidth / cv.videoHeight);
+                const d = pip.w;
+                const cx = pip.x + pip.w / 2;
+                const cy = pip.y + pip.h / 2;
+                bctx.save();
+                bctx.beginPath();
+                bctx.arc(cx, cy, d / 2, 0, Math.PI * 2);
+                bctx.clip();
+                const cw = Math.min(cv.videoWidth, cv.videoHeight);
+                bctx.drawImage(cv, (cv.videoWidth - cw) / 2, (cv.videoHeight - cw) / 2, cw, cw, pip.x, pip.y, pip.w, pip.h);
+                bctx.restore();
+                bctx.save();
+                bctx.strokeStyle = 'rgba(255,255,255,0.7)';
+                bctx.lineWidth = Math.max(2, d * 0.02);
+                bctx.beginPath();
+                bctx.arc(cx, cy, d / 2 - bctx.lineWidth / 2, 0, Math.PI * 2);
+                bctx.stroke();
+                bctx.restore();
+                window.__bakeDebug.pipDrawn += 1;
+              } catch (pipErr) {
+                window.__bakeDebug.pipError = String(pipErr && pipErr.message || pipErr).slice(0, 200);
+              }
             }
           }
         } catch {}
@@ -1487,6 +1497,7 @@ function exposeTestApi() {
     previewZoom: (t) => { seek(t); S.dirty = true; return t; },
     summary: () => ({
       project: S.project?.name || null,
+      bakeDebug: window.__bakeDebug || null,
       duration: Number(S.duration?.toFixed?.(2) || S.duration),
       canvas: [S.canvasW, S.canvasH],
       zooms: (S.project?.zooms || []).map((z) => ({ start: z.start, end: z.end, scale: z.scale, auto: z.auto })),

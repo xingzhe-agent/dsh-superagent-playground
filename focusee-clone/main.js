@@ -789,14 +789,19 @@ async function runE2EOpenFirst(win) {
 // ---------------------------------------------------------------------------
 
 async function runE2ERecording(win) {
+  const withCamera = process.argv.includes('--e2e-rec-cam');
   const wc = win.webContents;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const evalJs = (code) => wc.executeJavaScript(code, true);
-  const report = { steps: [] };
+  const report = { steps: [], withCamera };
   const step = (name, ok, extra) => { report.steps.push({ name, ok, ...(extra ? { extra } : {}) }); console.log('[e2e-rec]', name, ok ? 'ok' : 'FAIL', extra || ''); };
   try {
     await wait(1500);
     await evalJs(`document.querySelector('#btn-record').click()`);
+    if (withCamera) {
+      // Force the camera option on before the source grid check.
+      await evalJs(`document.querySelector('#opt-camera').checked = true`);
+    }
     await wait(1600);
     const picked = await evalJs(`(async () => {
       const card = document.querySelector('#source-grid .source-card[data-source^="screen"]');
@@ -835,11 +840,16 @@ async function runE2ERecording(win) {
     step('main-window-hidden-while-recording', mainHidden);
     await wait(2500);
     // Stop via the pill's own button (the path a person uses).
+    let bakeDebug = null;
+    try {
+      bakeDebug = await evalJs(`window.__bakeDebug || null`);
+    } catch {}
     const stopped = await new Promise((resolve) => {
       if (!controlWindow || controlWindow.isDestroyed()) return resolve('no-pill');
       controlWindow.webContents.executeJavaScript(`document.querySelector('#btn-stop').click(); 'clicked'`, true).then(resolve).catch((e) => resolve('exec:' + e.message));
     });
     step('pill-stop-clicked', stopped === 'clicked', stopped);
+    if (bakeDebug) step('bake-debug', true, JSON.stringify(bakeDebug));
     await wait(3500);
     const projects = await listProjects();
     const rec = projects.find((p) => p.id !== 'sample');
