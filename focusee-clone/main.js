@@ -248,6 +248,26 @@ function createMainWindow() {
   return win;
 }
 
+/** Stop the pill's own camera preview capture — otherwise the camera stays
+ *  hot after recording ends (the pill window merely hides). */
+async function stopPillCameraPreview() {
+  if (!controlWindow || controlWindow.isDestroyed()) return;
+  try {
+    await controlWindow.webContents.executeJavaScript(`
+      (() => {
+        const v = document.getElementById('cam-video');
+        if (v && v.srcObject) {
+          v.srcObject.getTracks().forEach((t) => t.stop());
+          v.srcObject = null;
+        }
+        return true;
+      })()
+    `);
+  } catch (err) {
+    console.warn('[control] preview stop failed:', err.message);
+  }
+}
+
 function createControlWindow() {
   const win = new BrowserWindow({
     width: 320,
@@ -540,6 +560,7 @@ function registerIpc() {
   });
 
   ipcMain.handle('capture:hideControl', async () => {
+    await stopPillCameraPreview();
     if (controlWindow) {
       controlWindow.hide();
     }
