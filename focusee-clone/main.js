@@ -227,6 +227,10 @@ function createMainWindow() {
       console.error('[e2e] failed:', err);
       app.exit(1);
     });
+    if (process.argv.includes('--e2e-open-first')) runE2EOpenFirst(win).catch((err) => {
+      console.error('[e2e-open-first] failed:', err);
+      app.exit(1);
+    });
     if (isE2E_REC) runE2ERecording(win).catch((err) => {
       console.error('[e2e-rec] failed:', err);
       app.exit(1);
@@ -656,6 +660,41 @@ async function runE2E(win) {
     await shot('06-export-done');
   }
   await wait(300);
+  app.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// E2E: open the newest user project (first recent card) and screenshot the
+// editor — reproduces exactly what a person sees with their own data.
+// ---------------------------------------------------------------------------
+
+async function runE2EOpenFirst(win) {
+  const wc = win.webContents;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const evalJs = (code) => wc.executeJavaScript(code, true);
+  await wait(1500);
+  await evalJs(`document.querySelector('.recent-card')?.click()`);
+  await wait(3500);
+  const info = await evalJs(`({
+    title: document.querySelector('#doc-title')?.textContent,
+    canvasHasContent: (() => {
+      const c = document.getElementById('canvas');
+      if (!c) return null;
+      const ctx = c.getContext('2d');
+      const d = ctx.getImageData(Math.round(c.width * 0.75), Math.round(c.height * 0.75), 40, 40).data;
+      let sum = 0; for (let i = 3; i < d.length; i += 4) sum += d[i];
+      return sum / (40 * 40);
+    })(),
+    camEnabled: window.__focusee ? undefined : undefined,
+    projectCam: (window.__projCamRef || {}),
+  })`);
+  console.log('[e2e-open-first]', JSON.stringify(info));
+  await wait(300);
+  const img = await wc.capturePage();
+  const dir = path.join(dataRoot(), 'artifacts');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(path.join(dir, 'open-first.png'), img.toPNG());
+  console.log('[e2e-open-first] shot saved');
   app.exit(0);
 }
 
