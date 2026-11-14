@@ -395,6 +395,10 @@ function registerIpc() {
   ipcMain.handle('app:info', async () => ({
     version: app.getVersion(),
     forceBake: process.argv.includes('--force-bake'),
+    cameraStatus: systemPreferences.getMediaAccessStatus('camera'),
+    micStatus: systemPreferences.getMediaAccessStatus('microphone'),
+    cameraStatus: systemPreferences.getMediaAccessStatus('camera'),
+    micStatus: systemPreferences.getMediaAccessStatus('microphone'),
     electron: process.versions.electron,
     chrome: process.versions.chrome,
     dataRoot: dataRoot(),

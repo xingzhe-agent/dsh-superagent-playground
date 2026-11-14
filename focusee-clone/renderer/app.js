@@ -86,6 +86,7 @@ document.addEventListener('click', (e) => {
 
 async function boot() {
   S.info = await window.focusee.info();
+  setInterval(async () => { try { S.info = await window.focusee.info(); } catch {} }, 30000);
   S.projects = await window.focusee.projects.list();
   renderHome();
   showView('home');
@@ -902,6 +903,18 @@ async function openRecordDialog() {
   } catch (err) {
     grid.innerHTML = `<div class="loading">获取失败：${escapeHtml(err.message)}</div>`;
   }
+  // Permission preflight: surface camera/mic state BEFORE the person commits.
+  try {
+    const st = S.info || await window.focusee.info();
+    const badge = (label, v) => {
+      const ok = v === 'granted';
+      const cls = ok ? 'ok' : (v === 'not-determined' || v === 'unknown' ? '' : 'warn');
+      const txt = { granted: '已授权', denied: '被拒绝', restricted: '受限', 'not-determined': '待授权', unknown: '未知' }[v] || v;
+      return `<span class="perm-badge ${cls}">${label}：${txt}${ok ? '' : '（勾选后开始录制时会弹授权，请允许）'}</span>`;
+    };
+    const el = $('#perm-status');
+    if (el) el.innerHTML = badge('摄像头', st.cameraStatus || 'unknown') + badge('麦克风', st.micStatus || 'unknown');
+  } catch {}
 }
 
 function renderSources() {
@@ -945,6 +958,9 @@ async function startRecording() {
     await new Promise((r) => setTimeout(r, 150));
   }
 
+  // Acquire every stream BEFORE hiding the editor: camera/mic permission
+  // dialogs must be visible and clickable, and skip-notice toasts must land
+  // where the person can see them. The pill only appears once capture is live.
   try {
     // Screen video and microphone audio are captured as separate streams and
     // then joined: mixing a desktop video constraint with a microphone audio
@@ -997,11 +1013,12 @@ async function startRecording() {
             video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
             audio: false,
           }),
-          12000,
+          20000,
           '摄像头',
         );
+        toast('已连接摄像头，画中画将合成进录制的视频');
       } catch (err) {
-        toast('摄像头未授权或不可用，将不录制画中画（系统设置 → 隐私与安全性 → 摄像头）');
+        toast(`画中画跳过：摄像头未就绪（${err.message}）。可在系统设置 → 隐私与安全性 → 摄像头 中允许后重新录制`);
       }
     }
     if ($('#opt-teleprompter')?.checked) {

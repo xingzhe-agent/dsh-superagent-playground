@@ -456,6 +456,10 @@ input[type="range"]::-webkit-slider-thumb {
 .source-card .sc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-card .sc-kind { font-size: 9.5px; color: var(--muted); background: #eef0f6; border-radius: 4px; padding: 1px 4px; }
 .loading { grid-column: 1/-1; padding: 24px; text-align: center; color: var(--muted); }
+.perm-status { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.perm-badge { font-size: 11px; border-radius: 6px; padding: 3px 8px; border: 1px solid var(--line-strong); color: var(--muted); }
+.perm-badge.ok { color: #137a4a; border-color: #a5e2c6; background: #edfaf4; }
+.perm-badge.warn { color: #b25e09; border-color: #ffd9a8; background: #fff7ec; }
 .countdown {
   font-size: 120px; font-weight: 800; color: #fff; text-shadow: 0 12px 40px rgba(0,0,0,.35);
   animation: pop .9s ease infinite;
